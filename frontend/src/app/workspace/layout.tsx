@@ -3,7 +3,7 @@ import { Toaster } from "sonner";
 
 import { QueryClientProvider } from "@/components/query-client-provider";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
-import { CommandPalette } from "@/components/workspace/command-palette";
+import { CommandPaletteClient } from "@/components/workspace/command-palette-client";
 import { WorkspaceSidebar } from "@/components/workspace/workspace-sidebar";
 
 function parseSidebarOpenCookie(
@@ -28,7 +28,7 @@ export default async function WorkspaceLayout({
         <WorkspaceSidebar />
         <SidebarInset className="min-w-0">{children}</SidebarInset>
       </SidebarProvider>
-      <CommandPalette />
+      <CommandPaletteClient />
       <Toaster position="top-center" />
     </QueryClientProvider>
   );

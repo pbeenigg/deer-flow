@@ -1,6 +1,7 @@
 """Tests for memory storage providers."""
 
 import threading
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -10,6 +11,7 @@ from deerflow.agents.memory.storage import (
     MemoryStorage,
     create_empty_memory,
     get_memory_storage,
+    PostgresMemoryStorage,
 )
 from deerflow.config.memory_config import MemoryConfig
 
@@ -136,6 +138,100 @@ class TestFileMemoryStorage:
                 assert memory2["facts"][0]["content"] == "updated fact"
 
 
+class TestPostgresMemoryStorage:
+    class _FakeResult:
+        def __init__(self, row):
+            self._row = row
+
+        def fetchone(self):
+            return self._row
+
+    class _FakeConnection:
+        def __init__(self, db):
+            self.db = db
+            self.executed = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def execute(self, sql, params=None):
+            params = params or ()
+            self.executed.append((sql, params))
+            normalized = sql.strip().upper()
+
+            if normalized.startswith("SELECT"):
+                scope_key = params[0]
+                row = self.db.get(scope_key)
+                if row is None:
+                    return TestPostgresMemoryStorage._FakeResult(None)
+                return TestPostgresMemoryStorage._FakeResult((row["memory_data"], row["last_updated"]))
+
+            if normalized.startswith("INSERT INTO"):
+                scope_key, agent_name, memory_json, last_updated = params
+                self.db[scope_key] = {
+                    "agent_name": agent_name,
+                    "memory_data": memory_json,
+                    "last_updated": last_updated,
+                }
+                return TestPostgresMemoryStorage._FakeResult(None)
+
+            if normalized.startswith("CREATE TABLE") or normalized.startswith("CREATE INDEX"):
+                return TestPostgresMemoryStorage._FakeResult(None)
+
+            raise AssertionError(f"Unexpected SQL: {sql}")
+
+    @pytest.fixture(autouse=True)
+    def reset_env(self):
+        import deerflow.agents.memory.storage as storage_mod
+
+        storage_mod._storage_instance = None
+        yield
+        storage_mod._storage_instance = None
+
+    def test_load_and_save_global_memory(self):
+        db = {}
+
+        def fake_connect(_dsn):
+            return TestPostgresMemoryStorage._FakeConnection(db)
+
+        mock_psycopg = SimpleNamespace(connect=fake_connect)
+
+        with patch.dict("sys.modules", {"psycopg": mock_psycopg}):
+            storage = PostgresMemoryStorage(connection_string="postgresql://localhost/db")
+
+            memory = create_empty_memory()
+            memory["facts"] = [{"content": "postgres fact"}]
+
+            assert storage.save(memory) is True
+            loaded = storage.load()
+
+        assert loaded["facts"][0]["content"] == "postgres fact"
+        assert "global" in db
+
+    def test_load_and_save_agent_memory(self):
+        db = {}
+
+        def fake_connect(_dsn):
+            return TestPostgresMemoryStorage._FakeConnection(db)
+
+        mock_psycopg = SimpleNamespace(connect=fake_connect)
+
+        with patch.dict("sys.modules", {"psycopg": mock_psycopg}):
+            storage = PostgresMemoryStorage(connection_string="postgresql://localhost/db")
+
+            memory = create_empty_memory()
+            memory["facts"] = [{"content": "agent fact"}]
+
+            assert storage.save(memory, agent_name="agent_1") is True
+            loaded = storage.reload(agent_name="agent_1")
+
+        assert loaded["facts"][0]["content"] == "agent fact"
+        assert "agent:agent_1" in db
+
+
 class TestGetMemoryStorage:
     """Test get_memory_storage function."""
 
@@ -201,3 +297,20 @@ class TestGetMemoryStorage:
         with patch("deerflow.agents.memory.storage.get_memory_config", return_value=MemoryConfig(storage_class="builtins.dict")):
             storage = get_memory_storage()
             assert isinstance(storage, FileMemoryStorage)
+
+    def test_get_memory_storage_returns_postgres_storage(self):
+        mock_psycopg = SimpleNamespace(connect=lambda _dsn: TestPostgresMemoryStorage._FakeConnection({}))
+
+        with (
+            patch.dict("sys.modules", {"psycopg": mock_psycopg}),
+            patch(
+                "deerflow.agents.memory.storage.get_memory_config",
+                return_value=MemoryConfig(
+                    storage_class="deerflow.agents.memory.storage.PostgresMemoryStorage",
+                    connection_string="postgresql://localhost/db",
+                ),
+            ),
+        ):
+            storage = get_memory_storage()
+
+        assert isinstance(storage, PostgresMemoryStorage)

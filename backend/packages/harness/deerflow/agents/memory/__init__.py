@@ -21,6 +21,7 @@ from deerflow.agents.memory.queue import (
 from deerflow.agents.memory.storage import (
     FileMemoryStorage,
     MemoryStorage,
+    PostgresMemoryStorage,
     get_memory_storage,
 )
 from deerflow.agents.memory.updater import (
@@ -46,6 +47,7 @@ __all__ = [
     # Storage
     "MemoryStorage",
     "FileMemoryStorage",
+    "PostgresMemoryStorage",
     "get_memory_storage",
     # Updater
     "MemoryUpdater",

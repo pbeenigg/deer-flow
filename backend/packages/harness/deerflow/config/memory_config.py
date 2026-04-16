@@ -1,6 +1,8 @@
 """Configuration for memory mechanism."""
 
-from pydantic import BaseModel, Field
+from typing import Self
+
+from pydantic import BaseModel, Field, model_validator
 
 
 class MemoryConfig(BaseModel):
@@ -21,6 +23,14 @@ class MemoryConfig(BaseModel):
             "Note: if you previously set this to `.deer-flow/memory.json`, "
             "the file will now be resolved as `{base_dir}/.deer-flow/memory.json`; "
             "migrate existing data or use an absolute path to preserve the old location."
+        ),
+    )
+    connection_string: str | None = Field(
+        default=None,
+        description=(
+            "Connection string for PostgreSQL-backed memory storage. "
+            "Required when storage_class is PostgresMemoryStorage. "
+            "Example: postgresql://user:pass@localhost:5432/deerflow"
         ),
     )
     storage_class: str = Field(
@@ -59,6 +69,12 @@ class MemoryConfig(BaseModel):
         le=8000,
         description="Maximum tokens to use for memory injection",
     )
+
+    @model_validator(mode="after")
+    def _validate_postgres_storage_config(self) -> Self:
+        if "PostgresMemoryStorage" in self.storage_class and not self.connection_string:
+            raise ValueError("memory.connection_string is required when using PostgresMemoryStorage")
+        return self
 
 
 # Global configuration instance

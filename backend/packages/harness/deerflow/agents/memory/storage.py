@@ -164,6 +164,140 @@ class FileMemoryStorage(MemoryStorage):
             return False
 
 
+class PostgresMemoryStorage(MemoryStorage):
+    """PostgreSQL-backed memory storage provider."""
+
+    _table_name = "deerflow_memory"
+
+    def __init__(self, connection_string: str | None = None):
+        config = get_memory_config()
+        self._connection_string = connection_string or config.connection_string
+        if not self._connection_string:
+            raise ValueError("memory.connection_string is required for PostgresMemoryStorage")
+        try:
+            import psycopg
+        except ImportError as exc:
+            raise ImportError(
+                "psycopg is required for PostgresMemoryStorage. Install it with: uv add psycopg[binary]"
+            ) from exc
+
+        self._psycopg = psycopg
+        self._memory_cache: dict[str | None, tuple[dict[str, Any], str | None]] = {}
+        self._init_lock = threading.Lock()
+        self._initialized = False
+
+    def _validate_agent_name(self, agent_name: str) -> None:
+        if not agent_name:
+            raise ValueError("Agent name must be a non-empty string.")
+        if not AGENT_NAME_PATTERN.match(agent_name):
+            raise ValueError(f"Invalid agent name {agent_name!r}: names must match {AGENT_NAME_PATTERN.pattern}")
+
+    def _scope_key(self, agent_name: str | None = None) -> str:
+        if agent_name is None:
+            return "global"
+        self._validate_agent_name(agent_name)
+        return f"agent:{agent_name}"
+
+    def _connect(self):
+        return self._psycopg.connect(self._connection_string)
+
+    def _ensure_schema(self, conn) -> None:
+        conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {self._table_name} (
+                scope_key text PRIMARY KEY,
+                agent_name text,
+                memory_data jsonb NOT NULL,
+                last_updated text NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            f"CREATE INDEX IF NOT EXISTS idx_{self._table_name}_agent_name ON {self._table_name} (agent_name)"
+        )
+
+    def _ensure_initialized(self) -> None:
+        if self._initialized:
+            return
+        with self._init_lock:
+            if self._initialized:
+                return
+            with self._connect() as conn:
+                self._ensure_schema(conn)
+            self._initialized = True
+
+    def _load_from_db(self, agent_name: str | None = None) -> tuple[dict[str, Any], str | None]:
+        self._ensure_initialized()
+        scope_key = self._scope_key(agent_name)
+
+        with self._connect() as conn:
+            self._ensure_schema(conn)
+            row = conn.execute(
+                f"SELECT memory_data::text, last_updated FROM {self._table_name} WHERE scope_key = %s",
+                (scope_key,),
+            ).fetchone()
+
+        if row is None:
+            return create_empty_memory(), None
+
+        memory_json, last_updated = row
+        cached = self._memory_cache.get(agent_name)
+        if cached is not None and cached[1] == last_updated:
+            return cached[0], cached[1]
+
+        try:
+            memory_data = json.loads(memory_json) if memory_json else create_empty_memory()
+        except (TypeError, json.JSONDecodeError) as e:
+            logger.warning("Failed to load memory row from PostgreSQL: %s", e)
+            return create_empty_memory(), None
+
+        if not isinstance(memory_data, dict):
+            logger.warning("PostgreSQL memory row did not contain an object; resetting to empty memory")
+            return create_empty_memory(), None
+
+        return memory_data, last_updated
+
+    def load(self, agent_name: str | None = None) -> dict[str, Any]:
+        memory_data, last_updated = self._load_from_db(agent_name)
+        self._memory_cache[agent_name] = (memory_data, last_updated)
+        return memory_data
+
+    def reload(self, agent_name: str | None = None) -> dict[str, Any]:
+        memory_data, last_updated = self._load_from_db(agent_name)
+        self._memory_cache[agent_name] = (memory_data, last_updated)
+        return memory_data
+
+    def save(self, memory_data: dict[str, Any], agent_name: str | None = None) -> bool:
+        scope_key = self._scope_key(agent_name)
+        memory_to_save = dict(memory_data)
+        memory_to_save["lastUpdated"] = utc_now_iso_z()
+        payload = json.dumps(memory_to_save, ensure_ascii=False)
+
+        try:
+            self._ensure_initialized()
+            with self._connect() as conn:
+                self._ensure_schema(conn)
+                conn.execute(
+                    f"""
+                    INSERT INTO {self._table_name} (scope_key, agent_name, memory_data, last_updated)
+                    VALUES (%s, %s, %s::jsonb, %s)
+                    ON CONFLICT (scope_key)
+                    DO UPDATE SET
+                        agent_name = EXCLUDED.agent_name,
+                        memory_data = EXCLUDED.memory_data,
+                        last_updated = EXCLUDED.last_updated
+                    """,
+                    (scope_key, agent_name, payload, memory_to_save["lastUpdated"]),
+                )
+
+            self._memory_cache[agent_name] = (memory_to_save, memory_to_save["lastUpdated"])
+            logger.info("Memory saved to PostgreSQL scope %s", scope_key)
+            return True
+        except Exception as e:
+            logger.error("Failed to save memory to PostgreSQL: %s", e)
+            return False
+
+
 _storage_instance: MemoryStorage | None = None
 _storage_lock = threading.Lock()
 
@@ -196,6 +330,9 @@ def get_memory_storage() -> MemoryStorage:
 
             _storage_instance = storage_class()
         except Exception as e:
+            if "PostgresMemoryStorage" in storage_class_path:
+                logger.error("Failed to load configured PostgreSQL memory storage %s: %s", storage_class_path, e)
+                raise
             logger.error(
                 "Failed to load memory storage %s, falling back to FileMemoryStorage: %s",
                 storage_class_path,
