@@ -15,6 +15,7 @@ from app.gateway.routers import (
     memory,
     models,
     runs,
+    scheduled_tasks,
     skills,
     suggestions,
     thread_runs,
@@ -61,7 +62,24 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except Exception:
             logger.exception("No IM channels configured or channel service failed to start")
 
+        # Start scheduler service if enabled
+        try:
+            from app.scheduler.service import start_scheduler_service
+
+            scheduler_service = await start_scheduler_service()
+            logger.info("Scheduler service started: %s", scheduler_service.get_status())
+        except Exception:
+            logger.exception("Scheduler service not configured or failed to start")
+
         yield
+
+        # Stop scheduler service on shutdown
+        try:
+            from app.scheduler.service import stop_scheduler_service
+
+            await stop_scheduler_service()
+        except Exception:
+            logger.exception("Failed to stop scheduler service")
 
         # Stop channel service on shutdown
         try:
@@ -149,6 +167,10 @@ This gateway provides custom endpoints for models, MCP configuration, skills, an
                 "description": "Manage IM channel integrations (Feishu, Slack, Telegram)",
             },
             {
+                "name": "scheduled-tasks",
+                "description": "Manage scheduled tasks for proactive push notifications",
+            },
+            {
                 "name": "assistants-compat",
                 "description": "LangGraph Platform-compatible assistants API (stub)",
             },
@@ -195,6 +217,9 @@ This gateway provides custom endpoints for models, MCP configuration, skills, an
 
     # Channels API is mounted at /api/channels
     app.include_router(channels.router)
+
+    # Scheduled Tasks API is mounted at /api/scheduled-tasks
+    app.include_router(scheduled_tasks.router)
 
     # Assistants compatibility API (LangGraph Platform stub)
     app.include_router(assistants_compat.router)

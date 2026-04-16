@@ -721,8 +721,8 @@ agents_api:
 # ============================================================================
 # Allow the agent to autonomously create and improve skills in skills/custom/.
 skill_evolution:
-  enabled: false                # Set to true to allow agent-managed writes under skills/custom
-  moderation_model_name: null  # Model for LLM-based security scanning (null = use default model)
+  enabled: false # Set to true to allow agent-managed writes under skills/custom
+  moderation_model_name: null # Model for LLM-based security scanning (null = use default model)
 
 # ============================================================================
 # Checkpointer Configuration
@@ -908,3 +908,21 @@ checkpointer:
 #   failure_threshold: 5
 #   # Time in seconds before attempting to recover (default: 60)
 #   recovery_timeout_sec: 60
+
+# ============================================================================
+# Scheduled Tasks Configuration
+# ============================================================================
+# Enable the scheduled task system for proactive push notifications.
+# When enabled, users can create scheduled tasks that automatically
+# execute at specified times and push results via notification channels.
+#
+# Supported notification channels: email, wechat (webhook), telegram, dingtalk
+# Supported schedule types: once, daily, weekly, interval, cron
+
+# scheduler:
+#   enabled: false
+#   # LangGraph Server URL for agent execution (default: http://localhost:2024)
+#   # For Docker deployments, use the Docker service name:
+#   #   langgraph_url: http://langgraph:2024
+#   # You can also set DEER_FLOW_SCHEDULER_LANGGRAPH_URL.
+#   langgraph_url: http://localhost:2024
