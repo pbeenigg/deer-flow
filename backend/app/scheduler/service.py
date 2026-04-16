@@ -11,7 +11,7 @@ import os
 from typing import Any
 
 from app.scheduler.scheduler import TaskScheduler
-from app.scheduler.store import ScheduledTaskStore
+from app.scheduler.store import create_store
 from app.scheduler.worker import TaskWorker
 
 logger = logging.getLogger(__name__)
@@ -31,7 +31,7 @@ class SchedulerService:
         *,
         langgraph_url: str = _DEFAULT_LANGGRAPH_URL,
     ) -> None:
-        self.store = ScheduledTaskStore()
+        self.store = create_store()
         self.worker = TaskWorker(self.store, langgraph_url=langgraph_url)
         self.scheduler = TaskScheduler(self.store)
         self._running = False

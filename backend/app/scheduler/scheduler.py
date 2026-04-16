@@ -179,6 +179,7 @@ class TaskScheduler:
         while self._running:
             try:
                 await self._scan_due_tasks()
+                self._store.cleanup_stale_executions()
             except Exception:
                 logger.exception("Error scanning due tasks")
             await asyncio.sleep(60)

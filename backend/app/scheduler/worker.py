@@ -19,6 +19,8 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_LANGGRAPH_URL = "http://localhost:2024"
 DEFAULT_ASSISTANT_ID = "lead_agent"
+MAX_RETRIES = 3
+RETRY_DELAYS = [60, 300, 900]
 
 
 class TaskWorker:
@@ -26,6 +28,7 @@ class TaskWorker:
 
     Uses langgraph_sdk to invoke runs.wait on the LangGraph Server,
     then sends the result through configured notification channels.
+    Supports automatic retry with exponential backoff on failure.
     """
 
     def __init__(
@@ -33,6 +36,7 @@ class TaskWorker:
         store: ScheduledTaskStore,
         *,
         langgraph_url: str = DEFAULT_LANGGRAPH_URL,
+        max_retries: int = MAX_RETRIES,
     ) -> None:
         self._store = store
         self._langgraph_url = langgraph_url
@@ -40,6 +44,7 @@ class TaskWorker:
         self._client = None
         self._semaphore: asyncio.Semaphore | None = None
         self._running = False
+        self._max_retries = max_retries
 
     def _get_client(self):
         """Return the langgraph_sdk async client, creating it on first use."""
@@ -55,21 +60,22 @@ class TaskWorker:
             return
         self._semaphore = asyncio.Semaphore(max_concurrency)
         self._running = True
-        logger.info("TaskWorker started (max_concurrency=%d)", max_concurrency)
+        logger.info("TaskWorker started (max_concurrency=%d, max_retries=%d)", max_concurrency, self._max_retries)
 
     async def stop(self) -> None:
         """Stop the worker."""
         self._running = False
         logger.info("TaskWorker stopped")
 
-    async def execute_task(self, task: dict[str, Any]) -> None:
-        """Execute a scheduled task.
+    async def execute_task(self, task: dict[str, Any], *, execution_id: str | None = None) -> None:
+        """Execute a scheduled task with retry support.
 
-        1. Create an execution record
+        1. Create or reuse an execution record
         2. Find or create a thread for the task
         3. Invoke the agent via runs.wait
         4. Send the result through notification channels
         5. Update the execution record
+        6. On failure, retry with exponential backoff
         """
         if not self._running:
             logger.warning("TaskWorker not running, skipping task %s", task.get("id"))
@@ -77,38 +83,62 @@ class TaskWorker:
 
         async with self._semaphore or asyncio.Semaphore(1):
             task_id = task["id"]
-            execution = self._store.create_execution(task_id)
-            execution_id = execution["id"]
+            if execution_id:
+                exec_id = execution_id
+            else:
+                execution = self._store.create_execution(task_id)
+                exec_id = execution["id"]
 
-            logger.info("Executing task %s (execution %s)", task_id, execution_id)
+            logger.info("Executing task %s (execution %s)", task_id, exec_id)
 
-            try:
-                result_text = await self._run_agent(task)
+            last_error = None
+            for attempt in range(self._max_retries):
+                try:
+                    result_text = await self._run_agent(task)
 
-                notify_status = await self._notify.send(
-                    channels=task.get("notify_channels", []),
-                    content=result_text,
-                    config=task.get("notify_config", {}),
-                    task_name=task.get("task_name", "DeerFlow 定时推送"),
-                )
+                    notify_status = await self._notify.send(
+                        channels=task.get("notify_channels", []),
+                        content=result_text,
+                        config=task.get("notify_config", {}),
+                        task_name=task.get("task_name", "DeerFlow Scheduled Push"),
+                    )
 
-                self._store.update_execution(
-                    execution_id,
-                    status="success",
-                    finished_at=time.time(),
-                    result_content=result_text,
-                    notify_status=notify_status,
-                )
-                logger.info("Task %s executed successfully", task_id)
+                    self._store.update_execution(
+                        exec_id,
+                        status="success",
+                        finished_at=time.time(),
+                        result_content=result_text,
+                        notify_status=notify_status,
+                    )
+                    logger.info("Task %s executed successfully (attempt %d)", task_id, attempt + 1)
+                    return
 
-            except Exception as e:
-                logger.exception("Task %s execution failed", task_id)
-                self._store.update_execution(
-                    execution_id,
-                    status="failed",
-                    finished_at=time.time(),
-                    error_message=str(e),
-                )
+                except Exception as e:
+                    last_error = e
+                    if attempt < self._max_retries - 1:
+                        delay = RETRY_DELAYS[attempt] if attempt < len(RETRY_DELAYS) else 900
+                        logger.warning(
+                            "Task %s execution failed (attempt %d/%d), retrying in %ds: %s",
+                            task_id,
+                            attempt + 1,
+                            self._max_retries,
+                            delay,
+                            str(e),
+                        )
+                        self._store.update_execution(
+                            exec_id,
+                            error_message=f"Attempt {attempt + 1} failed: {str(e)}",
+                        )
+                        await asyncio.sleep(delay)
+                    else:
+                        logger.exception("Task %s execution failed after %d attempts", task_id, self._max_retries)
+
+            self._store.update_execution(
+                exec_id,
+                status="failed",
+                finished_at=time.time(),
+                error_message=f"Failed after {self._max_retries} attempts: {str(last_error)}",
+            )
 
     async def _run_agent(self, task: dict[str, Any]) -> str:
         """Run the agent and return the response text."""

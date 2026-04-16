@@ -926,3 +926,8 @@ checkpointer:
 #   #   langgraph_url: http://langgraph:2024
 #   # You can also set DEER_FLOW_SCHEDULER_LANGGRAPH_URL.
 #   langgraph_url: http://localhost:2024
+#   # PostgreSQL connection string for persistent storage.
+#   # If set, tasks and executions are stored in PostgreSQL.
+#   # If not set, falls back to a local JSON file (not recommended for production).
+#   # You can also use $DEER_FLOW_POSTGRES_DSN to reference the env variable.
+#   connection_string: postgresql://user:password@localhost:5432/deerflow

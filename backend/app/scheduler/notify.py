@@ -63,16 +63,59 @@ class EmailChannel(NotifyChannel):
 
 
 class WechatWebhookChannel(NotifyChannel):
-    """WeChat Work (企业微信) webhook notification."""
+    """WeChat Work (企业微信) webhook notification using markdown_v2."""
+
+    @staticmethod
+    def _escape_markdown_v2(text: str) -> str:
+        escape_chars = r"\_*>~`|"
+        result = []
+        for ch in text:
+            if ch in escape_chars:
+                result.append(f"\\{ch}")
+            else:
+                result.append(ch)
+        return "".join(result)
+
+    @staticmethod
+    def _format_markdown_v2(subject: str, content: str) -> str:
+        escaped_subject = WechatWebhookChannel._escape_markdown_v2(subject)
+        lines = content.split("\n")
+        formatted_lines = []
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith("### "):
+                heading = WechatWebhookChannel._escape_markdown_v2(stripped[4:])
+                formatted_lines.append(f"### {heading}")
+            elif stripped.startswith("## "):
+                heading = WechatWebhookChannel._escape_markdown_v2(stripped[3:])
+                formatted_lines.append(f"## {heading}")
+            elif stripped.startswith("# "):
+                heading = WechatWebhookChannel._escape_markdown_v2(stripped[2:])
+                formatted_lines.append(f"# {heading}")
+            elif stripped.startswith("- ") or stripped.startswith("* "):
+                item_text = WechatWebhookChannel._escape_markdown_v2(stripped[2:])
+                formatted_lines.append(f"- {item_text}")
+            elif len(stripped) > 2 and stripped[0].isdigit() and stripped[1] == ".":
+                item_text = WechatWebhookChannel._escape_markdown_v2(stripped[2:].strip())
+                formatted_lines.append(f"{stripped[0]}. {item_text}")
+            elif stripped == "---":
+                formatted_lines.append("---")
+            elif stripped == "":
+                formatted_lines.append("")
+            else:
+                formatted_lines.append(WechatWebhookChannel._escape_markdown_v2(line))
+        body = "\n".join(formatted_lines)
+        return f"# {escaped_subject}\n\n{body}"
 
     async def send(self, content: str, config: dict[str, Any], *, subject: str = "DeerFlow 定时推送") -> dict[str, Any]:
         webhook_url = config.get("webhook_url", "")
         if not webhook_url:
             return {"status": "failed", "error": "webhook_url is required"}
 
+        md_content = self._format_markdown_v2(subject, content)
         payload = {
-            "msgtype": "markdown",
-            "markdown": {"content": f"**{subject}**\n\n{content}"},
+            "msgtype": "markdown_v2",
+            "markdown_v2": {"content": md_content},
         }
 
         try:
