@@ -27,11 +27,24 @@ export function useNotification(): UseNotificationReturn {
   const lastNotificationTime = useRef<Date>(new Date());
 
   useEffect(() => {
-    // Check if browser supports Notification API
-    if ("Notification" in window) {
-      setIsSupported(true);
-      setPermission(Notification.permission);
-    }
+    const syncPermission = () => {
+      if ("Notification" in window) {
+        setIsSupported(true);
+        setPermission(Notification.permission);
+      } else {
+        setIsSupported(false);
+        setPermission("denied");
+      }
+    };
+
+    syncPermission();
+    window.addEventListener("focus", syncPermission);
+    document.addEventListener("visibilitychange", syncPermission);
+
+    return () => {
+      window.removeEventListener("focus", syncPermission);
+      document.removeEventListener("visibilitychange", syncPermission);
+    };
   }, []);
 
   const requestPermission =

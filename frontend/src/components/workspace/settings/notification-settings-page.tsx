@@ -65,7 +65,7 @@ export function NotificationSettingsPage() {
       }
     >
       <div className="flex flex-col gap-4">
-        {permission === "default" && (
+        {permission !== "granted" && (
           <Button onClick={handleRequestPermission} variant="default">
             <BellIcon className="mr-2 size-4" />
             {t.settings.notification.requestPermission}

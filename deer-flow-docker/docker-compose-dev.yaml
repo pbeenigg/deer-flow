@@ -68,7 +68,7 @@ services:
       - NODE_HOST=host.docker.internal
       # Override K8S API server URL since kubeconfig uses 127.0.0.1
       # which is unreachable from inside the container
-      - K8S_API_SERVER=https://host.docker.internal:26443
+      - K8S_API_SERVER=${K8S_API_SERVER:-}
     env_file:
       - ../.env
     extra_hosts:
